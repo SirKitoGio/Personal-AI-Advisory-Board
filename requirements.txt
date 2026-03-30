@@ -1,4 +1,4 @@
-pip install -r requirements.txt# Core UI & State
+# Core UI & State
 streamlit>=1.30.0
 
 # LLM & RAG Orchestration
