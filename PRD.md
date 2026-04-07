@@ -16,7 +16,7 @@
 | **Document RAG** | Upload PDFs/Text; system chunks and embeds for semantic search. | High |
 | **Real-Time Scraper** | URL input field to strip HTML and feed raw text into context. | High |
 | **Local Vector DB** | ChromaDB for storing document and web embeddings locally. | High |
-| **Session Memory** | Continuous chat history retention within the thread. | High |
+| **Persistent History** | Continuous chat history retention powered by a local SQLite database. | High |
 | **Streaming** | Token-by-token response for a zero-lag feel. | Medium |
 
 ## 4. Technical Architecture
@@ -29,6 +29,7 @@
 *   **Inference:** Ollama or LM Studio.
 *   **Orchestration:** LangChain / LangGraph.
 *   **Vector DB:** ChromaDB.
+*   **SQL DB:** SQLite (History & Metadata).
 *   **Parsing:** BeautifulSoup4 / PyPDF2.
 
 ### 4.3 Project Structure
@@ -38,6 +39,7 @@ AI Advisory/
 │   └── app.py          # Main Streamlit application
 ├── data/
 │   ├── db/             # ChromaDB vector store
+│   ├── history.db      # SQLite persistent history
 │   └── uploads/        # Uploaded PDF/Text files
 ├── assets/             # Images and static assets
 ├── venv/               # Python virtual environment
@@ -51,6 +53,6 @@ AI Advisory/
 3.  **Arch Review:** Upload DB schema -> "Data Engineering" persona provides optimized SQL/Node.js logic.
 
 ## 6. Future Enhancements
-*   Persistent SQLite history for cross-session continuity.
 *   Automated Mock Interviews (Persona-driven).
 *   Portfolio analysis pipeline.
+*   Advanced RAG visualization and source attribution.

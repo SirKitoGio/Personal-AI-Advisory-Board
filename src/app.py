@@ -1,9 +1,19 @@
 import streamlit as st
 import os
+import uuid
+from datetime import datetime
 from openai import OpenAI
 from langchain_openai import ChatOpenAI
 from langchain_core.messages import HumanMessage, SystemMessage, AIMessage
 from dotenv import load_dotenv
+
+# Optional MLX support
+try:
+    import mlx_lm
+    import mlx_vlm
+except ImportError:
+    mlx_lm = None
+    mlx_vlm = None
 
 # --- CONFIG ---
 load_dotenv()
@@ -11,6 +21,23 @@ IS_PROD = os.getenv("IS_PROD", "false").lower() == "true"
 NVIDIA_API_KEY = os.getenv("NVIDIA_API_KEY")
 NVIDIA_BASE_URL = os.getenv("NVIDIA_BASE_URL", "https://integrate.api.nvidia.com/v1")
 OLLAMA_BASE_URL = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434/v1")
+# Default path remains internal, but hidden from UI
+MLX_MODEL_PATH = os.getenv("MLX_MODEL_PATH", "/Volumes/Sandisk Extreme SSD/Local AI Models/mlx-community/gemma-4-e4b-it-8bit") 
+
+# Ensure directories exist
+os.makedirs("data", exist_ok=True)
+os.makedirs(os.path.join("data", "uploads"), exist_ok=True)
+
+# --- MLX HELPER ---
+@st.cache_resource
+def load_mlx_vlm_model(path):
+    if not mlx_vlm:
+        return None, None
+    try:
+        return mlx_vlm.load(path)
+    except Exception as e:
+        st.error(f"Error loading MLX model: {str(e)}")
+        return None, None
 
 # --- PAGE CONFIG ---
 st.set_page_config(
@@ -18,6 +45,10 @@ st.set_page_config(
     page_icon="🤖",
     layout="wide"
 )
+
+# --- SESSION STATE INITIALIZATION ---
+if "messages" not in st.session_state:
+    st.session_state.messages = []
 
 # --- PERSONA DEFINITIONS ---
 PERSONAS = {
@@ -108,7 +139,7 @@ with st.sidebar:
     if IS_PROD:
         available_models = nvidia_models
     else:
-        available_models = ["deepseek-r1:8b", "llama3.1:8b", "llama3.2:3b"] + nvidia_models
+        available_models = ["Gemma 4 E4B (MLX)", "deepseek-r1:8b", "llama3.1:8b", "llama3.2:3b"] + nvidia_models
 
     selected_model = st.selectbox(
         "Select Model:",
@@ -116,8 +147,14 @@ with st.sidebar:
         index=0
     )
 
+    # MLX Model Path is hidden from UI
+    mlx_path = MLX_MODEL_PATH
+    
     if not NVIDIA_API_KEY and selected_model.startswith(("nvidia/", "meta/", "mistralai/")):
         st.error("Missing NVIDIA_API_KEY!")
+
+    # Set Thinking to OFF by default
+    show_thinking = st.toggle("Show Thinking Process", value=False)
 
     # Persona Selection
     persona_name = st.selectbox(
@@ -125,6 +162,10 @@ with st.sidebar:
         list(PERSONAS.keys()),
         index=0
     )
+
+    if st.button("➕ Clear Chat", use_container_width=True):
+        st.session_state.messages = []
+        st.rerun()
 
     st.divider()
 
@@ -144,15 +185,15 @@ with st.sidebar:
 st.title(f"🤖 {persona_name} Advisor")
 
 # Determine Provider Info
-is_nvidia = selected_model.startswith(("nvidia/", "meta/", "mistralai/", "google/"))
-provider_name = "NVIDIA" if is_nvidia else "Ollama"
+if selected_model == "Gemma 4 E4B (MLX)":
+    provider_name = "MLX"
+else:
+    is_nvidia = selected_model.startswith(("nvidia/", "meta/", "mistralai/", "google/"))
+    provider_name = "NVIDIA" if is_nvidia else "Ollama"
+
 st.markdown(f"*Currently using: `{selected_model}` via {provider_name}*")
 
-# Initialize Chat History
-if "messages" not in st.session_state:
-    st.session_state.messages = []
-
-# Display Chat History
+# Display Current Messages
 for message in st.session_state.messages:
     with st.chat_message(message["role"]):
         st.markdown(message["content"])
@@ -164,22 +205,13 @@ if prompt := st.chat_input("Ask your mentor..."):
     with st.chat_message("user"):
         st.markdown(prompt)
 
-    # 2. Setup Client
-    if is_nvidia:
-        base_url = NVIDIA_BASE_URL
-        api_key = NVIDIA_API_KEY
-    else:
-        base_url = OLLAMA_BASE_URL
-        api_key = "ollama"
-
-    client = OpenAI(base_url=base_url, api_key=api_key)
-
-    # 3. Generate Assistant Response
+    # 2. Setup Client & Generate Assistant Response
     with st.chat_message("assistant"):
         reasoning_container = st.empty()
         response_placeholder = st.empty()
         full_reasoning = ""
         full_response = ""
+        is_thinking = False
 
         # Build Message List
         messages = [
@@ -187,45 +219,123 @@ if prompt := st.chat_input("Ask your mentor..."):
             *[{"role": m["role"], "content": m["content"]} for m in st.session_state.messages]
         ]
 
-        try:
-            # Handle NVIDIA-specific "Thinking" params
-            extra_body = {}
-            if "nemotron" in selected_model:
-                extra_body = {
-                    "chat_template_kwargs": {"enable_thinking": True},
-                    "reasoning_budget": 16384
-                }
+        if provider_name == "MLX":
+            model, processor = load_mlx_vlm_model(mlx_path)
+            if model and processor:
+                try:
+                    # MLX VLM Chat Template
+                    prompt_str = processor.apply_chat_template(messages, add_generation_prompt=True)
 
-            completion = client.chat.completions.create(
-                model=selected_model,
-                messages=messages,
-                stream=True,
-                extra_body=extra_body if extra_body else None
-            )
+                    # Stream generation with MLX VLM
+                    for response in mlx_vlm.stream_generate(model, processor, prompt=prompt_str, max_tokens=2048):
+                        response_chunk = response.text
+                        
+                        # Handle thinking tags from Gemma 4
+                        if "<think>" in response_chunk:
+                            is_thinking = True
+                            response_chunk = response_chunk.replace("<think>", "")
+                        if "</think>" in response_chunk:
+                            is_thinking = False
+                            parts = response_chunk.split("</think>")
+                            full_reasoning += parts[0]
+                            response_chunk = parts[1] if len(parts) > 1 else ""
+                        
+                        if is_thinking:
+                            full_reasoning += response_chunk
+                        else:
+                            full_response += response_chunk
 
-            for chunk in completion:
-                if not chunk.choices:
-                    continue
-                
-                delta = chunk.choices[0].delta
-                
-                # Handle NVIDIA Reasoning Content
-                reasoning = getattr(delta, "reasoning_content", None)
-                if reasoning:
-                    full_reasoning += reasoning
-                    with reasoning_container:
-                        with st.expander("Thinking...", expanded=True):
-                            st.markdown(full_reasoning)
-                
-                # Handle Main Content
-                if delta.content:
-                    full_response += delta.content
-                    response_placeholder.markdown(full_response + "▌")
+                        # Update Thinking UI (Collapsed by default)
+                        if full_reasoning and show_thinking:
+                            with reasoning_container:
+                                with st.expander("Thinking...", expanded=False):
+                                    st.markdown(full_reasoning)
+                        
+                        # Update Main Content UI
+                        if full_response:
+                            response_placeholder.markdown(full_response + "▌")
+                    
+                    response_placeholder.markdown(full_response)
+                    st.session_state.messages.append({"role": "assistant", "content": full_response})
+                except Exception as e:
+                    st.error(f"MLX Inference Error: {str(e)}")
+            else:
+                st.error("MLX model failed to load. Check your installation.")
+        else:
+            # Setup OpenAI-compatible Client (NVIDIA/Ollama)
+            if provider_name == "NVIDIA":
+                base_url = NVIDIA_BASE_URL
+                api_key = NVIDIA_API_KEY
+            else:
+                base_url = OLLAMA_BASE_URL
+                api_key = "ollama"
 
-            response_placeholder.markdown(full_response)
-            st.session_state.messages.append({"role": "assistant", "content": full_response})
+            client = OpenAI(base_url=base_url, api_key=api_key)
 
-        except Exception as e:
-            st.error(f"Error connecting to {provider_name}: {str(e)}")
-            if not is_nvidia:
-                st.info("Make sure Ollama is running (`ollama serve`).")
+            try:
+                # Handle NVIDIA-specific "Thinking" params
+                extra_body = {}
+                if "nemotron" in selected_model:
+                    extra_body = {
+                        "chat_template_kwargs": {"enable_thinking": True},
+                        "reasoning_budget": 16384
+                    }
+
+                completion = client.chat.completions.create(
+                    model=selected_model,
+                    messages=messages,
+                    stream=True,
+                    extra_body=extra_body if extra_body else None
+                )
+
+                for chunk in completion:
+                    if not chunk.choices:
+                        continue
+                    
+                    delta = chunk.choices[0].delta
+                    
+                    # Handle NVIDIA Reasoning Content
+                    reasoning = getattr(delta, "reasoning_content", None)
+                    if reasoning:
+                        full_reasoning += reasoning
+                        if show_thinking:
+                            with reasoning_container:
+                                with st.expander("Thinking...", expanded=False):
+                                    st.markdown(full_reasoning)
+                    
+                    # Handle Main Content & <think> tags (DeepSeek-R1 style)
+                    if delta.content:
+                        content = delta.content
+                        
+                        if "<think>" in content:
+                            is_thinking = True
+                            content = content.replace("<think>", "")
+                        
+                        if "</think>" in content:
+                            is_thinking = False
+                            parts = content.split("</think>")
+                            full_reasoning += parts[0]
+                            content = parts[1] if len(parts) > 1 else ""
+                        
+                        if is_thinking:
+                            full_reasoning += content
+                        else:
+                            full_response += content
+
+                        # Update Thinking UI
+                        if full_reasoning and show_thinking:
+                            with reasoning_container:
+                                with st.expander("Thinking...", expanded=False):
+                                    st.markdown(full_reasoning)
+                        
+                        # Update Main Content UI
+                        if full_response:
+                            response_placeholder.markdown(full_response + "▌")
+
+                response_placeholder.markdown(full_response)
+                st.session_state.messages.append({"role": "assistant", "content": full_response})
+
+            except Exception as e:
+                st.error(f"Error connecting to {provider_name}: {str(e)}")
+                if provider_name == "Ollama":
+                    st.info("Make sure Ollama is running (`ollama serve`).")

@@ -7,6 +7,8 @@ langchain-community>=0.0.10
 langchain-openai>=0.0.2  # For Ollama/LM Studio OpenAI-compatible endpoints
 openai>=1.0.0
 langchain-text-splitters>=0.0.1
+mlx-lm>=0.10.0  # Added for Gemma E4B support on Apple Silicon
+mlx-vlm>=0.1.0  # Added for Gemma 4 multimodal and thinking support
 
 # Database & Vectors
 chromadb>=0.4.22
